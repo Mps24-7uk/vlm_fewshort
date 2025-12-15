@@ -1,42 +1,57 @@
+import io
+from typing import List
+from fastapi import File, Form, UploadFile, HTTPException
+from PIL import Image
+
 @app.post("/vision-fewshot-chip")
 async def vision_fewshot_chip(
-    reference_images: List[UploadFile] = File(
-        ..., description="Reference chip images"
-    ),
-    query_image: UploadFile = File(
-        ..., description="Query image"
-    ),
-    instruction_prompt: str = Form(
-        ..., description="Few-shot / CLIP-style instruction prompt from client"
-    ),
+    reference_images: List[UploadFile] = File(...),
+    reference_labels: List[str] = Form(...),
+    query_image: UploadFile = File(...),
+    instruction_prompt: str = Form(...),
     max_new_tokens: int = Form(256),
 ):
     """
-    TRUE few-shot chip classification.
-    Instruction prompt is fully controlled by the client.
+    TRUE labeled few-shot chip classification.
+    reference_labels must align with reference_images.
     """
 
-    if len(reference_images) < 3:
+    if len(reference_images) != len(reference_labels):
         raise HTTPException(
             status_code=400,
-            detail="At least 3 reference images required",
+            detail="reference_images and reference_labels length mismatch",
+        )
+
+    if len(reference_images) < 4:
+        raise HTTPException(
+            status_code=400,
+            detail="At least 4 reference images recommended",
         )
 
     try:
         content = []
 
-        # ---- Reference images (positive examples) ----
-        for ref in reference_images:
-            img_bytes = await ref.read()
+        # -------- Reference images with labels --------
+        for img_file, label in zip(reference_images, reference_labels):
+            img_bytes = await img_file.read()
             img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+
+            # Add image
             content.append({"type": "image", "image": img})
 
-        # ---- Query image (last image) ----
+            # Add label text (VERY IMPORTANT)
+            content.append({
+                "type": "text",
+                "text": f"This image is labeled as: {label.upper()}"
+            })
+
+        # -------- Query image --------
         query_bytes = await query_image.read()
         query_img = Image.open(io.BytesIO(query_bytes)).convert("RGB")
+
         content.append({"type": "image", "image": query_img})
 
-        # ---- Instruction prompt from client ----
+        # -------- Instruction from client --------
         content.append({
             "type": "text",
             "text": instruction_prompt
@@ -58,75 +73,82 @@ async def vision_fewshot_chip(
                 max_new_tokens=max_new_tokens,
             )
 
-        trimmed = [
+        trimmed_ids = [
             out[len(inp):] for inp, out in zip(inputs.input_ids, output_ids)
         ]
 
         response_text = processor.batch_decode(
-            trimmed,
+            trimmed_ids,
             skip_special_tokens=True,
             clean_up_tokenization_spaces=False,
         )[0]
 
-        return {"result": response_text.strip()}
+        return {
+            "result": response_text.strip()
+        }
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 
+################################################
 
 
-#####################
 
 import requests
 
 URL = "http://107.99.100.53:8000/vision-fewshot-chip"
 
-reference_paths = [
-    r"D:\chips\chip1.jpg",
-    r"D:\chips\chip2.jpg",
-    r"D:\chips\chip3.jpg",
-    r"D:\chips\chip4.jpg",
-    r"D:\chips\chip5.jpg",
+# -------- Reference set (LABELED) --------
+reference_data = [
+    # CHIP examples
+    ("D:/chips/chip_1.jpg", "chip"),
+    ("D:/chips/chip_2.jpg", "chip"),
+    ("D:/chips/chip_3.jpg", "chip"),
+
+    # NON-CHIP examples
+    ("D:/chips/noise_1.jpg", "non_chip"),
+    ("D:/chips/noise_2.jpg", "non_chip"),
 ]
 
-query_path = r"D:\chips\test.jpg"
+query_image_path = "D:/chips/query.jpg"
 
-# 🔥 CLIP-style instruction prompt (YOU control this)
+# -------- Instruction prompt (CLIP-style) --------
 instruction_prompt = """
-You are a strict semiconductor inspection model.
+You are a strict industrial vision classifier.
 
-The FIRST images are verified GOOD chips.
-The LAST image is a QUERY.
+You have seen labeled examples of CHIP and NON_CHIP.
+The last image is the QUERY image.
 
-Evaluate purely on visual similarity:
-- Shape
-- Size
-- Edges
-- Material
-- Surface texture
+Compare the query image visually against BOTH classes.
 
-Output STRICTLY in this format:
+Respond STRICTLY in this format:
 
 RESULT: CHIP or NOT_A_CHIP
 CONFIDENCE: 0-100
 REASON: one short sentence
 
-If similarity is low or ambiguous → NOT_A_CHIP
+Rules:
+- Visual similarity only
+- If closer to NON_CHIP → NOT_A_CHIP
+- If ambiguous → NOT_A_CHIP
 """
 
 files = []
+labels = []
 
-for p in reference_paths:
-    files.append(("reference_images", open(p, "rb")))
+for path, label in reference_data:
+    files.append(("reference_images", open(path, "rb")))
+    labels.append(label)
 
-files.append(("query_image", open(query_path, "rb")))
+files.append(("query_image", open(query_image_path, "rb")))
 
 response = requests.post(
     URL,
     files=files,
     data={
+        "reference_labels": labels,      # 🔑 labels aligned with images
         "instruction_prompt": instruction_prompt,
         "max_new_tokens": "200",
     },
@@ -134,14 +156,4 @@ response = requests.post(
 )
 
 print(response.json()["result"])
-
-
-
-
-
-
-
-
-
-
 
