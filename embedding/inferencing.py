@@ -1,16 +1,24 @@
+import os
+import csv
 import torch
-import numpy as np
 import faiss
+import numpy as np
 from PIL import Image
 from torchvision import transforms
 
 from model import ResNetEmbedding
 
 
-EMBEDDING_DB = "chip_resnet_embeddings.npz"
 FAISS_INDEX_PATH = "chip_resnet.index"
 TOP_K = 5
 USE_GPU = True
+CSV_OUTPUT = "folder_inference_results.csv"
+
+SUPPORTED_EXT = (".jpg", ".jpeg", ".png", ".bmp")
+
+# ------------------------
+# Image Transform
+# ------------------------
 transform = transforms.Compose([
     transforms.Resize((224, 224)),
     transforms.ToTensor(),
@@ -20,6 +28,10 @@ transform = transforms.Compose([
     )
 ])
 
+
+# ------------------------
+# FAISS Loader
+# ------------------------
 def load_faiss_index(index_path, use_gpu=True):
     index = faiss.read_index(index_path)
 
@@ -33,81 +45,106 @@ def load_faiss_index(index_path, use_gpu=True):
     return index
 
 
-def infer_chip(
-    image_path,
-    index,
-    embeddings_db_path=EMBEDDING_DB,
-    top_k=TOP_K
-):
+# ------------------------
+# Load Model
+# ------------------------
+def load_model():
     device = "cuda" if torch.cuda.is_available() else "cpu"
-
-    # Load ResNet embedding model
     model = ResNetEmbedding().to(device).eval()
+    return model, device
 
-    # Load embedding metadata
-    db = np.load(embeddings_db_path, allow_pickle=True)
-    labels = db["labels"]
-    paths = db["paths"]
 
-    # Load & preprocess image
+# ------------------------
+# Infer One Image
+# ------------------------
+def infer_single_image(image_path, model, index, device, top_k):
     img = Image.open(image_path).convert("RGB")
     img_tensor = transform(img).unsqueeze(0).to(device)
 
-    # Generate embedding
     with torch.no_grad():
-        query_emb = model(img_tensor).cpu().numpy().astype("float32")
+        emb = model(img_tensor).cpu().numpy().astype("float32")
 
-    # FAISS search
-    scores, indices = index.search(query_emb, top_k)
-
+    scores, ids = index.search(emb, top_k)
     scores = scores[0]
-    indices = indices[0]
+    ids = ids[0]  # FAISS IDs = labels
 
-    top_labels = labels[indices]
-    top_paths = paths[indices]
+    defect_scores = scores[ids == 1]
+    no_defect_scores = scores[ids == 0]
 
-    # Aggregate similarity
-    defect_scores = scores[top_labels == 1]
-    no_defect_scores = scores[top_labels == 0]
-
-    defect_sim = defect_scores.mean() if len(defect_scores) else 0.0
-    no_defect_sim = no_defect_scores.mean() if len(no_defect_scores) else 0.0
+    defect_sim = float(defect_scores.mean()) if len(defect_scores) else 0.0
+    no_defect_sim = float(no_defect_scores.mean()) if len(no_defect_scores) else 0.0
 
     decision = "DEFECT" if defect_sim > no_defect_sim else "NO_DEFECT"
 
-    return {
-        "decision": decision,
-        "defect_similarity": float(defect_sim),
-        "no_defect_similarity": float(no_defect_sim),
-        "top_matches": [
-            {
-                "path": top_paths[i],
-                "label": int(top_labels[i]),
-                "similarity": float(scores[i])
-            }
-            for i in range(len(indices))
-        ]
-    }
+    return decision, defect_sim, no_defect_sim, ids, scores
 
+
+# ------------------------
+# Infer Folder + Save CSV
+# ------------------------
+def infer_folder(folder_path):
+    index = load_faiss_index(FAISS_INDEX_PATH, USE_GPU)
+    model, device = load_model()
+
+    images = [
+        f for f in os.listdir(folder_path)
+        if f.lower().endswith(SUPPORTED_EXT)
+    ]
+
+    print(f"📂 Found {len(images)} images")
+
+    # Prepare CSV header
+    header = [
+        "image_name",
+        "decision",
+        "defect_similarity",
+        "no_defect_similarity"
+    ]
+
+    for i in range(TOP_K):
+        header.append(f"top{i+1}_label")
+        header.append(f"top{i+1}_similarity")
+
+    rows = []
+
+    for img_name in images:
+        img_path = os.path.join(folder_path, img_name)
+
+        try:
+            decision, defect_sim, no_defect_sim, ids, scores = infer_single_image(
+                img_path, model, index, device, TOP_K
+            )
+
+            row = [
+                img_name,
+                decision,
+                round(defect_sim, 6),
+                round(no_defect_sim, 6)
+            ]
+
+            for i in range(TOP_K):
+                row.append(int(ids[i]))
+                row.append(round(float(scores[i]), 6))
+
+            rows.append(row)
+
+            print(f"✅ {img_name} → {decision}")
+
+        except Exception as e:
+            print(f"❌ Failed {img_name}: {e}")
+
+    # Write CSV
+    with open(CSV_OUTPUT, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(header)
+        writer.writerows(rows)
+
+    print(f"\n💾 CSV saved: {CSV_OUTPUT}")
+
+
+# ------------------------
+# Main
+# ------------------------
 if __name__ == "__main__":
-    index = load_faiss_index(
-        FAISS_INDEX_PATH,
-        use_gpu=USE_GPU
-    )
-
-    result = infer_chip(
-        image_path="test_chip.jpg",
-        index=index
-    )
-
-    print("\n🧠 Decision:", result["decision"])
-    print("Defect similarity:", result["defect_similarity"])
-    print("No-defect similarity:", result["no_defect_similarity"])
-
-    print("\n🔝 Top Matches:")
-    for m in result["top_matches"]:
-        print(
-            f"{m['path']} | "
-            f"label={m['label']} | "
-            f"similarity={m['similarity']:.4f}"
-        )
+    FOLDER_PATH = "test_images"
+    infer_folder(FOLDER_PATH)
