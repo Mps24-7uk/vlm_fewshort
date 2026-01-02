@@ -91,6 +91,88 @@ async def vision_fewshot_chip(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/vision-fire-smoke")
+async def vision_fire_smoke(
+    image_file: UploadFile = File(...),
+    instruction_prompt: str = Form(...),
+    max_new_tokens: int = Form(256),
+):
+    """
+    Generic vision detection endpoint.
+    Supports MULTIPLE detections via client-defined instruction.
+    """
+
+    # -------- Load image --------
+    try:
+        content = await image_file.read()
+        if not content:
+            raise ValueError("Empty image file")
+
+        image = Image.open(io.BytesIO(content)).convert("RGB")
+        image = image.resize((224, 224))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid image: {e}")
+
+    # -------- Build messages --------
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "image", "image": image},
+                {"type": "text", "text": instruction_prompt},
+            ],
+        }
+    ]
+
+    # -------- Prepare inputs --------
+    try:
+        inputs = processor.apply_chat_template(
+            messages,
+            tokenize=True,
+            add_generation_prompt=True,
+            return_dict=True,
+            return_tensors="pt",
+        ).to(model.device)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Processor error: {e}")
+
+    # -------- Generate --------
+    try:
+        with torch.inference_mode():
+            output_ids = model.generate(
+                **inputs,
+                max_new_tokens=max_new_tokens,
+                temperature=0.0,
+                do_sample=False,
+            )
+
+        trimmed_ids = [
+            out[len(inp):] for inp, out in zip(inputs.input_ids, output_ids)
+        ]
+
+        result = processor.batch_decode(
+            trimmed_ids,
+            skip_special_tokens=True,
+            clean_up_tokenization_spaces=False,
+        )[0].strip()
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Inference failed: {e}")
+
+    # -------- Light validation --------
+    lines = [l for l in result.splitlines() if l.strip()]
+    for line in lines:
+        if line.count(",") != 4:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Invalid output line: {line}"
+            )
+
+    return {
+        "result": result
+    }
+
+
 
 ################################################
 
@@ -156,4 +238,97 @@ response = requests.post(
 )
 
 print(response.json()["result"])
+
+
+######################################
+
+
+import os
+import csv
+import requests
+
+URL = "http://127.0.0.1:8000/vision-fire-smoke"
+
+IMAGE_DIR = r"D:/fire_images"        # 🔁 CHANGE THIS
+OUTPUT_CSV = "fire_smoke_results.csv"
+
+SUPPORTED_EXT = (".jpg", ".jpeg", ".png", ".bmp")
+
+instruction_prompt = """
+You are an industrial fire & smoke detection vision system.
+
+Task:
+1. Analyze the image.
+2. Detect ALL visible regions of:
+   - FIRE
+   - SMOKE
+
+For EACH detected region:
+- Draw ONE bounding box.
+
+Image resolution is 224x224.
+
+Respond STRICTLY in this format:
+class,x1,y1,x2,y2
+
+Rules:
+- One line per detected region
+- Bounding box values must be integers
+- If no fire or smoke detected:
+  NO_FIRE_SMOKE,0,0,0,0
+- Do not add explanations
+"""
+
+# -------- Collect images --------
+image_paths = [
+    os.path.join(IMAGE_DIR, f)
+    for f in os.listdir(IMAGE_DIR)
+    if f.lower().endswith(SUPPORTED_EXT)
+]
+
+if not image_paths:
+    raise RuntimeError("No images found in directory")
+
+print(f"📂 Found {len(image_paths)} images")
+
+# -------- CSV setup --------
+with open(OUTPUT_CSV, "w", newline="") as csvfile:
+    writer = csv.writer(csvfile)
+    writer.writerow(["image", "class", "x1", "y1", "x2", "y2"])
+
+    # -------- Process images --------
+    for img_path in image_paths:
+        try:
+            with open(img_path, "rb") as img_file:
+                response = requests.post(
+                    URL,
+                    files={"image_file": img_file},
+                    data={
+                        "instruction_prompt": instruction_prompt,
+                        "max_new_tokens": "256",
+                    },
+                    timeout=60,
+                )
+
+            result = response.json()["result"]
+            print(f"\n🖼️ {os.path.basename(img_path)}")
+            print(result)
+
+            lines = [l for l in result.splitlines() if l.strip()]
+
+            for line in lines:
+                cls, x1, y1, x2, y2 = line.split(",")
+                writer.writerow([
+                    os.path.basename(img_path),
+                    cls.strip(),
+                    x1.strip(),
+                    y1.strip(),
+                    x2.strip(),
+                    y2.strip(),
+                ])
+
+        except Exception as e:
+            print(f"❌ Failed {img_path}: {e}")
+
+
 
