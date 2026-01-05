@@ -173,6 +173,80 @@ async def vision_fire_smoke(
     }
 
 
+@app.post("/vision-fire-smoke-check")
+async def vision_fire_smoke_check(
+    image_file: UploadFile = File(...),
+    instruction_prompt: str = Form(...),
+    max_new_tokens: int = Form(64),
+):
+    """
+    Vision classification endpoint:
+    Checks whether image contains FIRE, SMOKE, or NO_FIRE_SMOKE.
+    Instruction is fully controlled by client.
+    """
+
+    # -------- Load image --------
+    try:
+        content = await image_file.read()
+        if not content:
+            raise ValueError("Empty image file")
+
+        image = Image.open(io.BytesIO(content)).convert("RGB")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid image: {e}")
+
+    # -------- Build messages --------
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "image", "image": image},
+                {"type": "text", "text": instruction_prompt},
+            ],
+        }
+    ]
+
+    # -------- Prepare inputs --------
+    try:
+        inputs = processor.apply_chat_template(
+            messages,
+            tokenize=True,
+            add_generation_prompt=True,
+            return_dict=True,
+            return_tensors="pt",
+        ).to(model.device)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Processor error: {e}")
+
+    # -------- Generate --------
+    try:
+        with torch.inference_mode():
+            output_ids = model.generate(
+                **inputs,
+                max_new_tokens=max_new_tokens,
+                temperature=0.0,
+                do_sample=False,
+            )
+
+        trimmed_ids = [
+            out[len(inp):] for inp, out in zip(inputs.input_ids, output_ids)
+        ]
+
+        result = processor.batch_decode(
+            trimmed_ids,
+            skip_special_tokens=True,
+            clean_up_tokenization_spaces=False,
+        )[0].strip()
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Inference failed: {e}")
+
+    return {
+        "result": result
+    }
+
+
+
 
 ################################################
 
@@ -329,6 +403,70 @@ with open(OUTPUT_CSV, "w", newline="") as csvfile:
 
         except Exception as e:
             print(f"❌ Failed {img_path}: {e}")
+
+
+
+###################################################################
+import os
+import requests
+
+URL = "http://127.0.0.1:8000/vision-fire-smoke-check"
+
+IMAGE_DIR = r"D:/fire_images"   # 🔁 CHANGE THIS
+SUPPORTED_EXT = (".jpg", ".jpeg", ".png", ".bmp")
+
+instruction_prompt = """
+You are an industrial safety vision system.
+
+Task:
+Analyze the image and determine if it contains:
+
+- FIRE
+- SMOKE
+- NO_FIRE_SMOKE
+
+Respond STRICTLY with ONE of the following (no extra text):
+
+FIRE
+SMOKE
+NO_FIRE_SMOKE
+
+Rules:
+- If both fire and smoke are visible → FIRE
+- If uncertain → NO_FIRE_SMOKE
+"""
+
+image_paths = [
+    os.path.join(IMAGE_DIR, f)
+    for f in os.listdir(IMAGE_DIR)
+    if f.lower().endswith(SUPPORTED_EXT)
+]
+
+if not image_paths:
+    raise RuntimeError("No images found")
+
+print(f"📂 Found {len(image_paths)} images")
+
+for img_path in image_paths:
+    try:
+        with open(img_path, "rb") as img_file:
+            response = requests.post(
+                URL,
+                files={"image_file": img_file},
+                data={
+                    "instruction_prompt": instruction_prompt,
+                    "max_new_tokens": "64",
+                },
+                timeout=30,
+            )
+
+        result = response.json()["result"]
+        print(f"🖼️ {os.path.basename(img_path)} → {result}")
+
+    except Exception as e:
+        print(f"❌ Failed {img_path}: {e}")
+
+
 
 
 
