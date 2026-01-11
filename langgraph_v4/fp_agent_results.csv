@@ -1,0 +1,17 @@
+image_name,image_path,predicted_class,confidence,fp_flag,reason
+dog.72.jpg,C:/Users/admin/Desktop/sem/vlm_fewshort/langgraph_v4/test_images\dog.72.jpg,dogs,0.7391,False,"Unstable prediction for 'dogs' (confidence=0.7391, majority=1.00) | Approved by human"
+dog.73.jpg,C:/Users/admin/Desktop/sem/vlm_fewshort/langgraph_v4/test_images\dog.73.jpg,dogs,0.6953,False,"Unstable prediction for 'dogs' (confidence=0.6953, majority=1.00) | Approved by human"
+dog.74.jpg,C:/Users/admin/Desktop/sem/vlm_fewshort/langgraph_v4/test_images\dog.74.jpg,dogs,0.5898,False,"Unstable prediction for 'dogs' (confidence=0.5898, majority=1.00) | Approved by human"
+dog.75.jpg,C:/Users/admin/Desktop/sem/vlm_fewshort/langgraph_v4/test_images\dog.75.jpg,dogs,0.6628,False,"Unstable prediction for 'dogs' (confidence=0.6628, majority=1.00) | Approved by human"
+dog.76.jpg,C:/Users/admin/Desktop/sem/vlm_fewshort/langgraph_v4/test_images\dog.76.jpg,dogs,0.6287,False,"Unstable prediction for 'dogs' (confidence=0.6287, majority=1.00) | Approved by human"
+dog.77.jpg,C:/Users/admin/Desktop/sem/vlm_fewshort/langgraph_v4/test_images\dog.77.jpg,dogs,0.7,False,"Unstable prediction for 'dogs' (confidence=0.7, majority=1.00) | Approved by human"
+dog.78.jpg,C:/Users/admin/Desktop/sem/vlm_fewshort/langgraph_v4/test_images\dog.78.jpg,dogs,0.5472,False,"Unstable prediction for 'dogs' (confidence=0.5472, majority=1.00) | Approved by human"
+dog.79.jpg,C:/Users/admin/Desktop/sem/vlm_fewshort/langgraph_v4/test_images\dog.79.jpg,dogs,0.7173,False,"Unstable prediction for 'dogs' (confidence=0.7173, majority=1.00) | Approved by human"
+dog.8.jpg,C:/Users/admin/Desktop/sem/vlm_fewshort/langgraph_v4/test_images\dog.8.jpg,dogs,0.7116,False,"Unstable prediction for 'dogs' (confidence=0.7116, majority=1.00) | Approved by human"
+dog.80.jpg,C:/Users/admin/Desktop/sem/vlm_fewshort/langgraph_v4/test_images\dog.80.jpg,dogs,0.6385,False,"Unstable prediction for 'dogs' (confidence=0.6385, majority=1.00) | Approved by human"
+dog.81.jpg,C:/Users/admin/Desktop/sem/vlm_fewshort/langgraph_v4/test_images\dog.81.jpg,dogs,0.5557,False,"Unstable prediction for 'dogs' (confidence=0.5557, majority=1.00) | Approved by human"
+dog.82.jpg,C:/Users/admin/Desktop/sem/vlm_fewshort/langgraph_v4/test_images\dog.82.jpg,dogs,0.7623,False,Stable prediction for 'dogs'
+dog.83.jpg,C:/Users/admin/Desktop/sem/vlm_fewshort/langgraph_v4/test_images\dog.83.jpg,dogs,0.7426,False,"Unstable prediction for 'dogs' (confidence=0.7426, majority=1.00) | Approved by human"
+dog.84(1).jpg,C:/Users/admin/Desktop/sem/vlm_fewshort/langgraph_v4/test_images\dog.84(1).jpg,dogs,0.5871,False,"Unstable prediction for 'dogs' (confidence=0.5871, majority=1.00) | Approved by human"
+dog.84.jpg,C:/Users/admin/Desktop/sem/vlm_fewshort/langgraph_v4/test_images\dog.84.jpg,dogs,0.5871,False,"Unstable prediction for 'dogs' (confidence=0.5871, majority=1.00) | Approved by human"
+dog.9.jpg,C:/Users/admin/Desktop/sem/vlm_fewshort/langgraph_v4/test_images\dog.9.jpg,dogs,0.6427,False,"Unstable prediction for 'dogs' (confidence=0.6427, majority=1.00) | Approved by human"

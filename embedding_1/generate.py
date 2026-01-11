@@ -56,4 +56,4 @@ def generate_faiss_index(
 
 
 if __name__ == "__main__":
-    generate_faiss_index(dataset_dir="dataset")
+    generate_faiss_index(dataset_dir="C:/Users/admin/Downloads/archive/test_set/test_set/")

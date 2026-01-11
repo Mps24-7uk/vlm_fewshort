@@ -1,12 +1,14 @@
 # run_fp_agent_folder.py
 import os
+import csv
 from tqdm import tqdm
 from fp_agent_graph import build_fp_agent
 
 IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".bmp")
 
 
-def run_fp_agent_on_folder(image_dir):
+def run_fp_agent_on_folder(image_dir, csv_path="fp_agent_results.csv"):
+    # Build graph once, reuse for all images
     agent = build_fp_agent()
 
     images = [
@@ -17,22 +19,41 @@ def run_fp_agent_on_folder(image_dir):
 
     results = []
 
+    # Process images in batch with streaming
     for img in tqdm(images, desc="FP Agent"):
         result = agent.invoke({"image_path": img})
         results.append(result)
 
+    # ---------- WRITE CSV ----------
+    fieldnames = [
+        "image_name",
+        "image_path",
+        "predicted_class",
+        "confidence",
+        "fp_flag",
+        "reason",
+    ]
+
+    with open(csv_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+
+        for o in results:
+            writer.writerow({
+                "image_name": os.path.basename(o.get("image_path", "")),
+                "image_path": o.get("image_path", ""),
+                "predicted_class": o.get("predicted_class", ""),
+                "confidence": o.get("confidence", 0.0),
+                "fp_flag": o.get("fp_flag", False),
+                "reason": o.get("reason", ""),
+            })
+
+    print(f"✅ CSV saved at: {csv_path}")
     return results
 
 
 if __name__ == "__main__":
-    outputs = run_fp_agent_on_folder("test_images")
-
-    for o in outputs:
-        print(
-            f"{os.path.basename(o['image_path'])} | "
-            f"Class={o['predicted_class']} | "
-            f"Conf={o['confidence']} | "
-            f"FP={o['fp_flag']} | "
-            f"Score={o['fp_score']} | "
-            f"{o['reason']}"
-        )
+    run_fp_agent_on_folder(
+        image_dir="C:/Users/admin/Desktop/sem/vlm_fewshort/langgraph_v4/test_images",
+        csv_path="fp_agent_results.csv"
+    )
