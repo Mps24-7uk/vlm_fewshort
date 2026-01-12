@@ -135,3 +135,123 @@ async def vision_generate(
     return {
         "response": generated_text
     }
+############################################################################
+
+
+# -*- coding: utf-8 -*-
+import io
+import torch
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from PIL import Image
+
+from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor
+from qwen_vl_utils import process_vision_info
+
+# ================= CONFIG =================
+MODEL_ID = "Qwen/Qwen2.5-VL-32B-Instruct-AWQ"
+
+# ================= LOAD MODEL =================
+print("🔄 Loading Qwen2.5-VL model...")
+
+model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+    MODEL_ID,
+    torch_dtype="auto",
+    device_map="auto",
+)
+model.eval()
+
+processor = AutoProcessor.from_pretrained(MODEL_ID)
+
+print("✅ Model and processor loaded")
+
+# ================= FASTAPI =================
+app = FastAPI(
+    title="Qwen2.5-VL Image Description API",
+    version="1.0",
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+@app.get("/")
+def health():
+    return {
+        "status": "ok",
+        "model": MODEL_ID,
+        "device": str(model.device),
+    }
+
+# ================= INFERENCE ENDPOINT =================
+@app.post("/vision-generate")
+async def vision_generate(
+    prompt: str = Form("Describe this image."),
+    image_file: UploadFile = File(...),
+    max_new_tokens: int = Form(128),
+):
+    """
+    Image + text inference using Qwen2.5-VL
+    """
+
+    try:
+        # ---------- Read image ----------
+        image_bytes = await image_file.read()
+        image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+
+        # ---------- Build messages ----------
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image", "image": image},
+                    {"type": "text", "text": prompt},
+                ],
+            }
+        ]
+
+        # ---------- Prepare inputs ----------
+        text = processor.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+
+        image_inputs, video_inputs = process_vision_info(messages)
+
+        inputs = processor(
+            text=[text],
+            images=image_inputs,
+            videos=video_inputs,
+            padding=True,
+            return_tensors="pt",
+        )
+
+        inputs = inputs.to(model.device)
+
+        # ---------- Generate ----------
+        with torch.inference_mode():
+            generated_ids = model.generate(
+                **inputs,
+                max_new_tokens=max_new_tokens,
+            )
+
+        generated_ids_trimmed = [
+            out_ids[len(in_ids):]
+            for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
+        ]
+
+        output_text = processor.batch_decode(
+            generated_ids_trimmed,
+            skip_special_tokens=True,
+            clean_up_tokenization_spaces=False,
+        )[0]
+
+        return {"response": output_text.strip()}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
