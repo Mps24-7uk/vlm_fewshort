@@ -6,7 +6,7 @@ import faiss
 import numpy as np
 from PIL import Image
 from tqdm import tqdm
-from transformers import AutoProcessor, AutoModel
+from transformers import AutoProcessor, Qwen3VLForConditionalGeneration
 
 # ---------------- CONFIG ----------------
 MODEL_NAME = "Qwen/Qwen3-VL-8B-Instruct"
@@ -17,9 +17,9 @@ os.makedirs(ARTIFACT_DIR, exist_ok=True)
 
 # ---------------- LOAD MODEL ----------------
 processor = AutoProcessor.from_pretrained(MODEL_NAME)
-model = AutoModel.from_pretrained(
+model = Qwen3VLForConditionalGeneration.from_pretrained(
     MODEL_NAME,
-    torch_dtype=torch.float16,
+    dtype="auto",
     device_map="auto"
 )
 model.eval()
@@ -31,22 +31,40 @@ with open(JSONL_PATH, "r") as f:
 embeddings = []
 metadata = []
 
+# ---------------- EMBEDDING FUNCTION ----------------
+def compute_embedding(image: Image.Image, text: str) -> np.ndarray:
+    inputs = processor(
+        images=image,
+        text=text,
+        return_tensors="pt"
+    ).to(model.device)
+
+    with torch.no_grad():
+        outputs = model(
+            **inputs,
+            output_hidden_states=True,
+            return_dict=True
+        )
+
+    # Last hidden state: [batch, seq_len, hidden_dim]
+    hidden = outputs.hidden_states[-1]
+
+    # Mean pooling
+    emb = hidden.mean(dim=1)
+
+    # Normalize
+    emb = torch.nn.functional.normalize(emb, dim=-1)
+
+    return emb.cpu().numpy()[0]
+
 # ---------------- BUILD EMBEDDINGS ----------------
-for rec in tqdm(records, desc="Embedding images"):
+for rec in tqdm(records, desc="Building embeddings"):
     image_path = os.path.join(IMAGE_DIR, rec["image_name"])
     image = Image.open(image_path).convert("RGB")
 
-    inputs = processor(
-        images=image,
-        text=rec["description"],
-        return_tensors="pt"
-    ).to("cuda")
+    emb = compute_embedding(image, rec["description"])
 
-    with torch.no_grad():
-        emb = model.get_image_text_features(**inputs)
-        emb = torch.nn.functional.normalize(emb, dim=-1)
-
-    embeddings.append(emb.cpu().numpy()[0])
+    embeddings.append(emb)
     metadata.append({
         "image_name": rec["image_name"],
         "label": rec["label"],
@@ -72,4 +90,4 @@ with open(os.path.join(ARTIFACT_DIR, "config.json"), "w") as f:
         "chip_threshold": 0.75
     }, f, indent=2)
 
-print("✅ Embeddings, index, and metadata saved successfully")
+print("✅ Embeddings and index saved successfully")
