@@ -32,16 +32,21 @@ embeddings = []
 metadata = []
 
 # ---------------- EMBEDDING FUNCTION ----------------
-def compute_embedding(image: Image.Image, text: str) -> np.ndarray:
+def compute_embedding(image: Image.Image, text: str):
     inputs = processor(
         images=image,
         text=text,
         return_tensors="pt"
-    ).to(model.device)
+    )
+
+    inputs = {k: v.to(model.device) for k, v in inputs.items()}
 
     with torch.no_grad():
         outputs = model(
-            **inputs,
+            input_ids=inputs["input_ids"],
+            attention_mask=inputs["attention_mask"],
+            pixel_values=inputs["pixel_values"],
+            image_grid_thw=inputs["image_grid_thw"],
             output_hidden_states=True,
             return_dict=True
         )
@@ -49,13 +54,14 @@ def compute_embedding(image: Image.Image, text: str) -> np.ndarray:
     # Last hidden state: [batch, seq_len, hidden_dim]
     hidden = outputs.hidden_states[-1]
 
-    # Mean pooling
+    # Mean pool over sequence
     emb = hidden.mean(dim=1)
 
-    # Normalize
+    # Normalize for cosine similarity
     emb = torch.nn.functional.normalize(emb, dim=-1)
 
     return emb.cpu().numpy()[0]
+
 
 # ---------------- BUILD EMBEDDINGS ----------------
 for rec in tqdm(records, desc="Building embeddings"):
