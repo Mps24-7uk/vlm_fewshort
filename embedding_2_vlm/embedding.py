@@ -3,50 +3,76 @@ import os
 import json
 import numpy as np
 import faiss
+import torch
 from tqdm import tqdm
 
-from scripts.qwen3_vl_embedding import Qwen3VLEmbedder  # huggingface helper
-# Note: The module is provided in the model repo and loaded via trust_remote_code=True
+from scripts.qwen3_vl_embedding import Qwen3VLEmbedder
 
 # ---------------- CONFIG ----------------
 MODEL_NAME = "Qwen/Qwen3-VL-Embedding-8B"
 JSONL_PATH = "output.jsonl"
 IMAGE_DIR = "data/chip_images"
 ARTIFACT_DIR = "artifacts"
+BATCH_SIZE = 2        # 🔥 set to 1 if VRAM < 24GB
+CHIP_THRESHOLD = 0.75
+
 os.makedirs(ARTIFACT_DIR, exist_ok=True)
 
 # ---------------- LOAD MODEL ----------------
-embedder = Qwen3VLEmbedder(model_name_or_path=MODEL_NAME)
+embedder = Qwen3VLEmbedder(
+    model_name_or_path=MODEL_NAME,
+    device="cuda"
+)
 
-# ---------------- READ DATA ----------------
+# ---------------- LOAD DATA ----------------
 with open(JSONL_PATH, "r") as f:
-    records = [json.loads(line) for line in f]
+    records = [json.loads(l) for l in f]
 
 # ---------------- BUILD INPUTS ----------------
-inputs = []
-for rec in records:
-    # format expected by the embedder
-    item = {
-        "text": rec["description"],
-        "image": os.path.join(IMAGE_DIR, rec["image_name"])
+def build_text(rec):
+    label_text = (
+        "electronic chip"
+        if rec["label"].lower() == "chip"
+        else "not an electronic chip"
+    )
+    return f"Label: {label_text}. Visual description: {rec['description']}"
+
+inputs = [
+    {
+        "image": os.path.join(IMAGE_DIR, r["image_name"]),
+        "text": build_text(r)
     }
-    inputs.append(item)
+    for r in records
+]
 
-# ---------------- COMPUTE EMBEDDINGS ----------------
-embeddings = embedder.process(inputs)  # NxD array
+# ---------------- BATCH EMBEDDING ----------------
+all_embeddings = []
 
-# ---------------- SAVE INDEX ----------------
-embeddings = np.array(embeddings).astype("float32")
+for i in tqdm(range(0, len(inputs), BATCH_SIZE), desc="Embedding batches"):
+    batch = inputs[i:i + BATCH_SIZE]
+
+    with torch.no_grad():
+        batch_emb = embedder.process(batch)
+
+    all_embeddings.extend(batch_emb)
+
+    # 🔥 important for long runs
+    torch.cuda.empty_cache()
+
+# ---------------- SAVE FAISS INDEX ----------------
+embeddings = np.array(all_embeddings).astype("float32")
 dim = embeddings.shape[1]
 
 index = faiss.IndexFlatIP(dim)
 index.add(embeddings)
 
-faiss.write_index(index, os.path.join(ARTIFACT_DIR, "faiss.index"))
+faiss.write_index(index, f"{ARTIFACT_DIR}/faiss.index")
 
 # ---------------- SAVE METADATA ----------------
-metadata = records
-with open(os.path.join(ARTIFACT_DIR, "metadata.json"), "w") as f:
-    json.dump(metadata, f)
+with open(f"{ARTIFACT_DIR}/metadata.json", "w") as f:
+    json.dump(records, f, indent=2)
 
-print("✅ Saved embeddings + FAISS index")
+with open(f"{ARTIFACT_DIR}/config.json", "w") as f:
+    json.dump({"chip_threshold": CHIP_THRESHOLD}, f, indent=2)
+
+print("✅ Embeddings saved without OOM")
