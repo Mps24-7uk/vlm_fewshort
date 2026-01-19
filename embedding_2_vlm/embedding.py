@@ -1,9 +1,9 @@
 # embedding.py
 import os
 import json
-import numpy as np
-import faiss
 import torch
+import faiss
+import numpy as np
 from tqdm import tqdm
 
 from scripts.qwen3_vl_embedding import Qwen3VLEmbedder
@@ -13,7 +13,6 @@ MODEL_NAME = "Qwen/Qwen3-VL-Embedding-8B"
 JSONL_PATH = "output.jsonl"
 IMAGE_DIR = "data/chip_images"
 ARTIFACT_DIR = "artifacts"
-BATCH_SIZE = 2        # 🔥 set to 1 if VRAM < 24GB
 CHIP_THRESHOLD = 0.75
 
 os.makedirs(ARTIFACT_DIR, exist_ok=True)
@@ -28,7 +27,7 @@ embedder = Qwen3VLEmbedder(
 with open(JSONL_PATH, "r") as f:
     records = [json.loads(l) for l in f]
 
-# ---------------- BUILD INPUTS ----------------
+# ---------------- TEXT BUILDER ----------------
 def build_text(rec):
     label_text = (
         "electronic chip"
@@ -37,30 +36,29 @@ def build_text(rec):
     )
     return f"Label: {label_text}. Visual description: {rec['description']}"
 
-inputs = [
-    {
-        "image": os.path.join(IMAGE_DIR, r["image_name"]),
-        "text": build_text(r)
-    }
-    for r in records
-]
-
-# ---------------- BATCH EMBEDDING ----------------
+# ---------------- EMBEDDING LOOP (SINGLE ITEM) ----------------
 all_embeddings = []
 
-for i in tqdm(range(0, len(inputs), BATCH_SIZE), desc="Embedding batches"):
-    batch = inputs[i:i + BATCH_SIZE]
+for rec in tqdm(records, desc="Embedding (no batch)"):
+    inp = {
+        "image": os.path.join(IMAGE_DIR, rec["image_name"]),
+        "text": build_text(rec)
+    }
 
-    with torch.no_grad():
-        batch_emb = embedder.process(batch)
+    with torch.no_grad(), torch.cuda.amp.autocast():
+        emb = embedder.process([inp])[0]
 
-    all_embeddings.extend(batch_emb)
+    # 🔥 CRITICAL: move off GPU immediately
+    if isinstance(emb, torch.Tensor):
+        emb = emb.detach().cpu().numpy()
 
-    # 🔥 important for long runs
+    all_embeddings.append(emb)
+
+    # 🔥 aggressive cleanup
     torch.cuda.empty_cache()
 
-# ---------------- SAVE FAISS INDEX ----------------
-embeddings = np.array(all_embeddings).astype("float32")
+# ---------------- FAISS INDEX ----------------
+embeddings = np.array(all_embeddings, dtype="float32")
 dim = embeddings.shape[1]
 
 index = faiss.IndexFlatIP(dim)
@@ -75,4 +73,4 @@ with open(f"{ARTIFACT_DIR}/metadata.json", "w") as f:
 with open(f"{ARTIFACT_DIR}/config.json", "w") as f:
     json.dump({"chip_threshold": CHIP_THRESHOLD}, f, indent=2)
 
-print("✅ Embeddings saved without OOM")
+print("✅ Embeddings saved (no batch, optimized)")
