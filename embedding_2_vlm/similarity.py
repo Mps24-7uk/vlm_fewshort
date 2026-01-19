@@ -1,113 +1,46 @@
 # similarity.py
+import os
 import json
-import torch
-import faiss
 import numpy as np
-from PIL import Image
-from transformers import AutoProcessor, AutoModel
+import faiss
 
-# ---------------- CONFIG ----------------
-MODEL_NAME = "Qwen/Qwen3-VL-8B-Instruct"
+from scripts.qwen3_vl_embedding import Qwen3VLEmbedder
+
 ARTIFACT_DIR = "artifacts"
+MODEL_NAME = "Qwen/Qwen3-VL-Embedding-8B"
 
 # ---------------- LOAD MODEL ----------------
-processor = AutoProcessor.from_pretrained(MODEL_NAME)
-model = AutoModel.from_pretrained(
-    MODEL_NAME,
-    torch_dtype=torch.float16,
-    device_map="auto"
-)
-model.eval()
+embedder = Qwen3VLEmbedder(model_name_or_path=MODEL_NAME)
 
-# ---------------- LOAD INDEX & METADATA ----------------
-index = faiss.read_index(f"{ARTIFACT_DIR}/faiss.index")
+# ---------------- LOAD INDEX ----------------
+index = faiss.read_index(os.path.join(ARTIFACT_DIR, "faiss.index"))
 
-with open(f"{ARTIFACT_DIR}/metadata.json") as f:
+with open(os.path.join(ARTIFACT_DIR, "metadata.json")) as f:
     metadata = json.load(f)
 
-with open(f"{ARTIFACT_DIR}/config.json") as f:
-    config = json.load(f)
+def embed_query(image_path, description=""):
+    """
+    Compute embedding for a query chip image + optional text.
+    """
+    inp = {"image": image_path, "text": description}
+    emb = embedder.process([inp])[0]
+    return np.array(emb).astype("float32")
 
-CHIP_THRESHOLD = config["chip_threshold"]
+def classify_image(image_path, top_k=5):
+    q_emb = embed_query(image_path)
 
-# ---------------- QUERY EMBEDDING ----------------
-def embed_query(image_path: str) -> np.ndarray:
-    image = Image.open(image_path).convert("RGB")
+    scores, indices = index.search(np.expand_dims(q_emb, 0), top_k)
 
-    prompt = (
-        "Describe the object focusing on shape, orientation, texture, "
-        "material, context, and whether it resembles an electronic chip."
-    )
-
-    inputs = processor(
-        images=image,
-        text=prompt,
-        return_tensors="pt"
-    ).to("cuda")
-
-    with torch.no_grad():
-        emb = model.get_image_text_features(**inputs)
-        emb = torch.nn.functional.normalize(emb, dim=-1)
-
-    return emb.cpu().numpy().astype("float32")
-
-# ---------------- SIMILARITY + CONFIDENCE ----------------
-def classify_image(image_path: str, top_k: int = 5) -> dict:
-    query_emb = embed_query(image_path)
-
-    scores, indices = index.search(query_emb, top_k)
-
-    similarities = scores[0]
+    sims = scores[0].tolist()
     matches = [metadata[i] for i in indices[0]]
 
-    confidence = float(np.mean(similarities))
-    decision = "true chip" if confidence >= CHIP_THRESHOLD else "not"
+    # average similarity as confidence
+    conf = float(np.mean(sims))
+    decision = "true chip" if conf > 0.75 else "not"
 
-    return {
-        "decision": decision,
-        "confidence": round(confidence, 3),
-        "similarities": [round(float(s), 3) for s in similarities],
-        "matches": matches
-    }
-
-# ---------------- OPTIONAL FINAL REASONING ----------------
-def explain_decision(image_path: str) -> str:
-    result = classify_image(image_path)
-
-    context = "\n".join(
-        f"- {m['description']} (label: {m['label']})"
-        for m in result["matches"]
-    )
-
-    prompt = f"""
-You are an expert in identifying electronic chips.
-
-Reference examples:
-{context}
-
-Similarity decision: {result['decision']}
-Confidence score: {result['confidence']}
-
-Analyze the image and provide final confirmation.
-
-Answer format:
-Decision:
-Explanation:
-"""
-
-    inputs = processor(
-        images=Image.open(image_path).convert("RGB"),
-        text=prompt,
-        return_tensors="pt"
-    ).to("cuda")
-
-    output = model.generate(**inputs, max_new_tokens=200)
-    return processor.decode(output[0], skip_special_tokens=True)
+    return {"decision": decision, "confidence": conf, "sims": sims, "matches": matches}
 
 # ---------------- TEST ----------------
 if __name__ == "__main__":
-    result = classify_image("test.jpg")
-    print(result)
-
-    explanation = explain_decision("test.jpg")
-    print(explanation)
+    res = classify_image("test.jpg")
+    print(res)
