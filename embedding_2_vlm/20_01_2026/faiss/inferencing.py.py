@@ -1,71 +1,94 @@
+import os
+import csv
 import faiss
 import numpy as np
+import torch
+from tqdm import tqdm
+
 from scripts.qwen3_vl_embedding import Qwen3VLEmbedder
 
-# ---------------- CONFIG ----------------
-MODEL_NAME = "Qwen/Qwen3-VL-Embedding-8B"
-INDEX_PATH = "index/chip.index"
-META_PATH = "index/metadata.npy"
-TOP_K = 5
-CONFIDENCE_THRESHOLD = 0.6
-# ----------------------------------------
+# ==============================
+# CONFIG
+# ==============================
+QUERY_IMAGE_DIR = "images/inference"     # 8000 images
+FAISS_INDEX_PATH = "chip.index"
+PATHS_SAVE_PATH = "chip_paths.npy"
+CSV_OUTPUT_PATH = "inference_results.csv"
 
-# Load model
+MODEL_NAME = "Qwen/Qwen3-VL-Embedding-8B"
+TOP_K = 1
+REJECTION_THRESHOLD = 0.8   # tune this
+
+# ==============================
+# LOAD MODEL
+# ==============================
 model = Qwen3VLEmbedder(
     model_name_or_path=MODEL_NAME
 )
 
-# Load FAISS index & metadata
-index = faiss.read_index(INDEX_PATH)
-image_paths = np.load(META_PATH)
+# ==============================
+# LOAD FAISS INDEX
+# ==============================
+index = faiss.read_index(FAISS_INDEX_PATH)
+image_paths_db = np.load(PATHS_SAVE_PATH)
 
-def softmax(x):
-    e_x = np.exp(x - np.max(x))
-    return e_x / e_x.sum()
+print(f"[INFO] FAISS index loaded with {index.ntotal} vectors")
 
-def infer(image_path):
-    # Generate embedding
-    emb = model.process({"image": image_path})
-    emb = emb / np.linalg.norm(emb, axis=1, keepdims=True)
-    emb = emb.astype("float32")
+# ==============================
+# LOAD QUERY IMAGES
+# ==============================
+query_images = [
+    os.path.join(QUERY_IMAGE_DIR, f)
+    for f in os.listdir(QUERY_IMAGE_DIR)
+    if f.lower().endswith((".jpg", ".jpeg", ".png", ".bmp", ".webp"))
+]
 
-    # FAISS search
-    scores, indices = index.search(emb, TOP_K)
+query_images.sort()
+print(f"[INFO] Found {len(query_images)} images for inference")
 
-    scores = scores[0]      # cosine similarities
-    indices = indices[0]
+# ==============================
+# CSV SETUP
+# ==============================
+with open(CSV_OUTPUT_PATH, mode="w", newline="") as csvfile:
+    writer = csv.writer(csvfile)
+    writer.writerow(["image_name", "decision", "best_distance"])
 
-    confidences = softmax(scores)
-    final_confidence = float(confidences[0])
+    # ==============================
+    # INFERENCE LOOP (ONE BY ONE)
+    # ==============================
+    for img_path in tqdm(query_images):
+        try:
+            with torch.no_grad():
+                embedding = model.process({"image": img_path})
 
-    # ---------------- DECISION LOGIC ----------------
-    if final_confidence > CONFIDENCE_THRESHOLD:
-        predicted_label = "chip"
-    else:
-        predicted_label = "unknown"
-    # ------------------------------------------------
+            embedding = np.asarray(embedding, dtype="float32")
 
-    results = []
-    for i in range(TOP_K):
-        results.append({
-            "matched_image": image_paths[indices[i]],
-            "similarity": float(scores[i]),
-            "confidence": float(confidences[i])
-        })
+            if embedding.ndim == 1:
+                embedding = embedding.reshape(1, -1)
 
-    return {
-        "predicted_label": predicted_label,
-        "final_confidence": final_confidence,
-        "results": results
-    }
+            distances, indices = index.search(embedding, TOP_K)
+            best_distance = float(distances[0][0])
 
-# ---------------- TEST ----------------
-if __name__ == "__main__":
-    test_image = "data/chip/img_001.jpg"
-    output = infer(test_image)
+            if best_distance <= REJECTION_THRESHOLD:
+                decision = "NORMAL_CHIP"
+            else:
+                decision = "ANOMALY_DEFECT"
 
-    print("\nPrediction:", output["predicted_label"])
-    print("Final Confidence:", output["final_confidence"])
-    print("Top Matches:")
-    for r in output["results"]:
-        print(r)
+            writer.writerow([
+                os.path.basename(img_path),
+                decision,
+                round(best_distance, 6)
+            ])
+
+        except Exception as e:
+            writer.writerow([
+                os.path.basename(img_path),
+                "ERROR",
+                -1
+            ])
+            print(f"[ERROR] {img_path} → {e}")
+
+print("===================================")
+print("[SUCCESS] Bulk inferencing complete")
+print(f"CSV saved at → {CSV_OUTPUT_PATH}")
+print("===================================")
