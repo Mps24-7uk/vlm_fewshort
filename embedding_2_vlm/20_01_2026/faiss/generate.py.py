@@ -1,6 +1,7 @@
 import os
 import faiss
 import numpy as np
+import torch
 from tqdm import tqdm
 
 from scripts.qwen3_vl_embedding import Qwen3VLEmbedder
@@ -13,8 +14,7 @@ FAISS_INDEX_PATH = "chip.index"
 PATHS_SAVE_PATH = "chip_paths.npy"
 
 MODEL_NAME = "Qwen/Qwen3-VL-Embedding-8B"
-BATCH_SIZE = 8              # adjust based on GPU memory
-EMBED_DIM = 1024            # Qwen3-VL embedding dimension
+EMBED_DIM = 1024   # Qwen3-VL embedding dimension
 
 # ==============================
 # LOAD MODEL
@@ -24,7 +24,7 @@ model = Qwen3VLEmbedder(
 )
 
 # ==============================
-# COLLECT IMAGE PATHS
+# LOAD IMAGE PATHS
 # ==============================
 image_paths = [
     os.path.join(IMAGE_DIR, f)
@@ -36,41 +36,36 @@ image_paths.sort()
 print(f"[INFO] Found {len(image_paths)} chip images")
 
 # ==============================
-# FAISS INDEX (L2 / Cosine ready)
+# CREATE FAISS INDEX
 # ==============================
 index = faiss.IndexFlatL2(EMBED_DIM)
 
-all_embeddings = []
-
 # ==============================
-# EMBEDDING GENERATION
+# GENERATE EMBEDDINGS (ONE BY ONE)
 # ==============================
-for i in tqdm(range(0, len(image_paths), BATCH_SIZE)):
-    batch_paths = image_paths[i:i + BATCH_SIZE]
-
-    inputs = [
-        {"image": img_path}
-        for img_path in batch_paths
-    ]
+for img_path in tqdm(image_paths):
+    inputs = {"image": img_path}
 
     with torch.no_grad():
-        embeddings = model.process(inputs)
+        embedding = model.process(inputs)
 
-    # ensure numpy float32
-    embeddings = np.asarray(embeddings, dtype="float32")
+    embedding = np.asarray(embedding, dtype="float32")
 
-    index.add(embeddings)
-    all_embeddings.append(embeddings)
+    # shape safety: (1, D)
+    if embedding.ndim == 1:
+        embedding = embedding.reshape(1, -1)
+
+    index.add(embedding)
 
 # ==============================
-# SAVE ARTIFACTS
+# SAVE INDEX + PATHS
 # ==============================
 faiss.write_index(index, FAISS_INDEX_PATH)
 np.save(PATHS_SAVE_PATH, np.array(image_paths))
 
 print("===================================")
-print("[SUCCESS] Embeddings generated")
-print(f"FAISS index saved → {FAISS_INDEX_PATH}")
-print(f"Image paths saved → {PATHS_SAVE_PATH}")
-print("Total vectors      →", index.ntotal)
+print("[SUCCESS] Embedding generation done")
+print(f"FAISS index saved  → {FAISS_INDEX_PATH}")
+print(f"Paths file saved  → {PATHS_SAVE_PATH}")
+print(f"Total vectors     → {index.ntotal}")
 print("===================================")
