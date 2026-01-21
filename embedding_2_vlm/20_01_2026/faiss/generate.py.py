@@ -2,61 +2,75 @@ import os
 import faiss
 import numpy as np
 from tqdm import tqdm
+
 from scripts.qwen3_vl_embedding import Qwen3VLEmbedder
 
-# ---------------- CONFIG ----------------
-IMAGE_DIR = "data/chip"
-INDEX_DIR = "index"
-INDEX_PATH = os.path.join(INDEX_DIR, "chip.index")
-META_PATH = os.path.join(INDEX_DIR, "metadata.npy")
+# ==============================
+# CONFIG
+# ==============================
+IMAGE_DIR = "images/chip"
+FAISS_INDEX_PATH = "chip.index"
+PATHS_SAVE_PATH = "chip_paths.npy"
 
 MODEL_NAME = "Qwen/Qwen3-VL-Embedding-8B"
-BATCH_SIZE = 8
-# ----------------------------------------
+BATCH_SIZE = 8              # adjust based on GPU memory
+EMBED_DIM = 1024            # Qwen3-VL embedding dimension
 
-os.makedirs(INDEX_DIR, exist_ok=True)
-
-# Load model
+# ==============================
+# LOAD MODEL
+# ==============================
 model = Qwen3VLEmbedder(
     model_name_or_path=MODEL_NAME
-    # torch_dtype=torch.float16,
-    # attn_implementation="flash_attention_2"
 )
 
+# ==============================
+# COLLECT IMAGE PATHS
+# ==============================
 image_paths = [
     os.path.join(IMAGE_DIR, f)
     for f in os.listdir(IMAGE_DIR)
-    if f.lower().endswith((".jpg", ".jpeg", ".png"))
+    if f.lower().endswith((".jpg", ".jpeg", ".png", ".bmp", ".webp"))
 ]
 
-assert len(image_paths) > 0, "No images found!"
+image_paths.sort()
+print(f"[INFO] Found {len(image_paths)} chip images")
+
+# ==============================
+# FAISS INDEX (L2 / Cosine ready)
+# ==============================
+index = faiss.IndexFlatL2(EMBED_DIM)
 
 all_embeddings = []
 
-print(f"Processing {len(image_paths)} chip images...")
-
+# ==============================
+# EMBEDDING GENERATION
+# ==============================
 for i in tqdm(range(0, len(image_paths), BATCH_SIZE)):
-    batch_paths = image_paths[i : i + BATCH_SIZE]
+    batch_paths = image_paths[i:i + BATCH_SIZE]
 
     inputs = [
         {"image": img_path}
         for img_path in batch_paths
     ]
 
-    embeddings = model.process(inputs)  # (B, D)
-    embeddings = embeddings / np.linalg.norm(embeddings, axis=1, keepdims=True)
+    with torch.no_grad():
+        embeddings = model.process(inputs)
+
+    # ensure numpy float32
+    embeddings = np.asarray(embeddings, dtype="float32")
+
+    index.add(embeddings)
     all_embeddings.append(embeddings)
 
-all_embeddings = np.vstack(all_embeddings).astype("float32")
-dim = all_embeddings.shape[1]
+# ==============================
+# SAVE ARTIFACTS
+# ==============================
+faiss.write_index(index, FAISS_INDEX_PATH)
+np.save(PATHS_SAVE_PATH, np.array(image_paths))
 
-# ---------------- FAISS INDEX ----------------
-index = faiss.IndexFlatIP(dim)  # cosine similarity (normalized vectors)
-index.add(all_embeddings)
-
-faiss.write_index(index, INDEX_PATH)
-np.save(META_PATH, np.array(image_paths))
-
-print("✅ FAISS index saved:", INDEX_PATH)
-print("✅ Metadata saved:", META_PATH)
-print("Embedding shape:", all_embeddings.shape)
+print("===================================")
+print("[SUCCESS] Embeddings generated")
+print(f"FAISS index saved → {FAISS_INDEX_PATH}")
+print(f"Image paths saved → {PATHS_SAVE_PATH}")
+print("Total vectors      →", index.ntotal)
+print("===================================")
