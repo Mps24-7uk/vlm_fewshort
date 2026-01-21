@@ -14,7 +14,6 @@ FAISS_INDEX_PATH = "chip.index"
 PATHS_SAVE_PATH = "chip_paths.npy"
 
 MODEL_NAME = "Qwen/Qwen3-VL-Embedding-8B"
-EMBED_DIM = 1024   # Qwen3-VL embedding dimension
 
 # ==============================
 # LOAD MODEL
@@ -36,6 +35,20 @@ image_paths.sort()
 print(f"[INFO] Found {len(image_paths)} chip images")
 
 # ==============================
+# AUTO DETECT EMBEDDING DIM
+# ==============================
+with torch.no_grad():
+    test_emb = model.process([{"image": image_paths[0]}])  # MUST be list
+
+if torch.is_tensor(test_emb):
+    test_emb = test_emb.cpu().numpy()
+else:
+    test_emb = np.asarray(test_emb)
+
+EMBED_DIM = test_emb.shape[-1]
+print(f"[INFO] Detected embedding dim: {EMBED_DIM}")
+
+# ==============================
 # CREATE FAISS INDEX
 # ==============================
 index = faiss.IndexFlatL2(EMBED_DIM)
@@ -44,14 +57,21 @@ index = faiss.IndexFlatL2(EMBED_DIM)
 # GENERATE EMBEDDINGS (ONE BY ONE)
 # ==============================
 for img_path in tqdm(image_paths):
-    inputs = {"image": img_path}
+
+    # THIS IS THE ONLY CORRECT FORMAT
+    inputs = [{"image": img_path}]
 
     with torch.no_grad():
         embedding = model.process(inputs)
 
-    embedding = np.asarray(embedding, dtype="float32")
+    # GPU → CPU
+    if torch.is_tensor(embedding):
+        embedding = embedding.cpu().numpy()
+    else:
+        embedding = np.asarray(embedding)
 
-    # shape safety: (1, D)
+    embedding = embedding.astype("float32")
+
     if embedding.ndim == 1:
         embedding = embedding.reshape(1, -1)
 
