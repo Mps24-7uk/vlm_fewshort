@@ -1,89 +1,85 @@
 import os
-import numpy as np
-import torch
+import sys
 import faiss
+import clip
+import torch
+import numpy as np
 from PIL import Image
 from tqdm import tqdm
-import open_clip
 
-# =========================
-# CONFIG
-# =========================
-IMAGE_DIR = "chip_images"
-FAISS_INDEX_PATH = "chip.index"
+# ================= CONFIG =================
+IMAGE_DIR = "data/chip_images"     # folder with 1500 chip images
+INDEX_SAVE_PATH = "chip.index"
 PATHS_SAVE_PATH = "chip_paths.npy"
 
-MODEL_NAME = "ViT-B-32"
-PRETRAINED = "openai"
-BATCH_SIZE = 32
+MODEL_NAME = "ViT-L/14"
+BATCH_SIZE = 1                     # streaming (industrial safe)
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+# =========================================
 
-# =========================
-# LOAD MODEL
-# =========================
-print("Loading CLIP model...")
-model, preprocess, _ = open_clip.create_model_and_transforms(
-    MODEL_NAME, pretrained=PRETRAINED
-)
-model = model.to(DEVICE)
-model.eval()
 
-# =========================
-# LOAD IMAGES
-# =========================
-image_paths = [
-    os.path.join(IMAGE_DIR, f)
-    for f in os.listdir(IMAGE_DIR)
-    if f.lower().endswith((".jpg", ".jpeg", ".png"))
-]
+def load_image(img_path):
+    try:
+        image = Image.open(img_path).convert("RGB")
+        return image
+    except Exception as e:
+        print(f"[WARN] Skipping corrupted image: {img_path}")
+        return None
 
-print(f"Found {len(image_paths)} chip images")
 
-# =========================
-# EMBEDDING LOOP
-# =========================
-all_embeddings = []
-valid_paths = []
+def main():
+    print("Loading CLIP model:", MODEL_NAME)
+    model, preprocess = clip.load(MODEL_NAME, device=DEVICE)
+    model.eval()
 
-with torch.no_grad():
-    for i in tqdm(range(0, len(image_paths), BATCH_SIZE)):
-        batch_paths = image_paths[i:i+BATCH_SIZE]
-        images = []
+    image_paths = []
+    embeddings = []
 
-        for p in batch_paths:
-            try:
-                img = Image.open(p).convert("RGB")
-                img = preprocess(img)
-                images.append(img)
-                valid_paths.append(p)
-            except Exception as e:
-                print("Skipping:", p, e)
+    all_images = [
+        os.path.join(IMAGE_DIR, f)
+        for f in os.listdir(IMAGE_DIR)
+        if f.lower().endswith((".png", ".jpg", ".jpeg", ".bmp"))
+    ]
 
-        if len(images) == 0:
-            continue
+    print("Total images found:", len(all_images))
 
-        images = torch.stack(images).to(DEVICE)
-        embeddings = model.encode_image(images)
-        embeddings = embeddings / embeddings.norm(dim=1, keepdim=True)
-        all_embeddings.append(embeddings.cpu().numpy())
+    with torch.no_grad():
+        for img_path in tqdm(all_images):
+            img = load_image(img_path)
+            if img is None:
+                continue
 
-# =========================
-# STACK EMBEDDINGS
-# =========================
-embeddings_np = np.vstack(all_embeddings).astype("float32")
-dim = embeddings_np.shape[1]
+            img_input = preprocess(img).unsqueeze(0).to(DEVICE)
+            emb = model.encode_image(img_input)
 
-print("Embedding shape:", embeddings_np.shape)
+            # Normalize → cosine similarity ready
+            emb = emb / emb.norm(dim=-1, keepdim=True)
 
-# =========================
-# BUILD FAISS INDEX
-# =========================
-index = faiss.IndexFlatIP(dim)  # cosine similarity
-index.add(embeddings_np)
+            emb = emb.cpu().numpy().astype("float32")
 
-faiss.write_index(index, FAISS_INDEX_PATH)
-np.save(PATHS_SAVE_PATH, np.array(valid_paths))
+            embeddings.append(emb[0])
+            image_paths.append(img_path)
 
-print("Saved:")
-print(" FAISS index ->", FAISS_INDEX_PATH)
-print(" Paths meta ->", PATHS_SAVE_PATH)
+    embeddings = np.vstack(embeddings)
+    print("Final embedding shape:", embeddings.shape)
+
+    dim = embeddings.shape[1]
+
+    print("Creating FAISS index...")
+    index = faiss.IndexFlatIP(dim)   # Inner Product = Cosine (since normalized)
+    index.add(embeddings)
+
+    print("Saving FAISS index...")
+    faiss.write_index(index, INDEX_SAVE_PATH)
+
+    print("Saving image paths metadata...")
+    np.save(PATHS_SAVE_PATH, np.array(image_paths))
+
+    print("\n=== DONE ===")
+    print("Index:", INDEX_SAVE_PATH)
+    print("Paths:", PATHS_SAVE_PATH)
+    print("Total vectors:", index.ntotal)
+
+
+if __name__ == "__main__":
+    main()
