@@ -1,87 +1,91 @@
 import os
-import csv
 import faiss
-import numpy as np
+import clip
 import torch
+import numpy as np
 from PIL import Image
-import open_clip
 from tqdm import tqdm
+import csv
 
-# =========================
-# CONFIG
-# =========================
-QUERY_DIR = "query_images"          # folder to test
-FAISS_INDEX_PATH = "chip.index"
+# ================= CONFIG =================
+TEST_IMAGE_DIR = "data/test_images"
+INDEX_PATH = "chip.index"
 PATHS_SAVE_PATH = "chip_paths.npy"
-OUTPUT_CSV = "inference_results.csv"
-
-THRESHOLD = 0.85
+MODEL_NAME = "ViT-L/14"
+THRESHOLD = 0.85   # tune this
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+OUTPUT_CSV = "inference_results.csv"
+# =========================================
 
-# =========================
-# LOAD FAISS + META
-# =========================
-print("Loading FAISS index...")
-index = faiss.read_index(FAISS_INDEX_PATH)
-ref_paths = np.load(PATHS_SAVE_PATH)
 
-# =========================
-# LOAD CLIP
-# =========================
-print("Loading CLIP model...")
-model, preprocess, _ = open_clip.create_model_and_transforms(
-    "ViT-B-32", pretrained="openai"
-)
-model = model.to(DEVICE)
-model.eval()
+def load_image(img_path):
+    try:
+        image = Image.open(img_path).convert("RGB")
+        return image
+    except:
+        print(f"[WARN] Corrupted image: {img_path}")
+        return None
 
-# =========================
-# INFERENCE LOOP
-# =========================
-results = []
 
-query_images = [
-    f for f in os.listdir(QUERY_DIR)
-    if f.lower().endswith((".jpg", ".jpeg", ".png"))
-]
+def main():
+    print("Loading CLIP model...")
+    model, preprocess = clip.load(MODEL_NAME, device=DEVICE)
+    model.eval()
 
-print(f"Running inference on {len(query_images)} images")
+    print("Loading FAISS index...")
+    index = faiss.read_index(INDEX_PATH)
 
-with torch.no_grad():
-    for img_name in tqdm(query_images):
-        img_path = os.path.join(QUERY_DIR, img_name)
+    print("Loading image paths...")
+    chip_paths = np.load(PATHS_SAVE_PATH)
 
-        try:
-            img = Image.open(img_path).convert("RGB")
-            img_tensor = preprocess(img).unsqueeze(0).to(DEVICE)
+    results = []
 
-            emb = model.encode_image(img_tensor)
-            emb = emb / emb.norm(dim=1, keepdim=True)
+    test_images = [
+        os.path.join(TEST_IMAGE_DIR, f)
+        for f in os.listdir(TEST_IMAGE_DIR)
+        if f.lower().endswith((".png", ".jpg", ".jpeg", ".bmp"))
+    ]
+
+    print("Total test images:", len(test_images))
+
+    with torch.no_grad():
+        for img_path in tqdm(test_images):
+            img = load_image(img_path)
+            if img is None:
+                continue
+
+            img_input = preprocess(img).unsqueeze(0).to(DEVICE)
+            emb = model.encode_image(img_input)
+
+            # Normalize
+            emb = emb / emb.norm(dim=-1, keepdim=True)
             emb = emb.cpu().numpy().astype("float32")
 
-            scores, ids = index.search(emb, 1)
+            # Search
+            D, I = index.search(emb, k=1)
 
-            confidence = float(scores[0][0])
-            nearest_img = ref_paths[ids[0][0]]
+            similarity = float(D[0][0])   # cosine similarity
+            nearest_idx = int(I[0][0])
+            nearest_image = chip_paths[nearest_idx]
 
-            prediction = "chip" if confidence >= THRESHOLD else "no_chip"
+            prediction = "chip" if similarity >= THRESHOLD else "no_chip"
 
             results.append([
-                img_name,
-                os.path.basename(nearest_img),
-                round(confidence, 4),
-                prediction
+                os.path.basename(img_path),
+                prediction,
+                os.path.basename(nearest_image),
+                round(similarity, 4)
             ])
 
-        except Exception as e:
-            print("Failed:", img_name, e)
+    # Save CSV (industrial logging)
+    with open(OUTPUT_CSV, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["image_name", "prediction", "nearest_image", "confidence"])
+        writer.writerows(results)
 
-# =========================
-# SAVE CSV
-# =========================
-with open(OUTPUT_CSV, "w", newline="") as f:
-    writer = csv.writer(f)
-    writer.writerow(["image_name", "nearest_image", "confidence", "prediction"])
-    writer.writerows(results)
+    print("\n=== INFERENCE COMPLETE ===")
+    print("Results saved to:", OUTPUT_CSV)
 
-print("Saved results to:", OUTPUT_CSV)
+
+if __name__ == "__main__":
+    main()
