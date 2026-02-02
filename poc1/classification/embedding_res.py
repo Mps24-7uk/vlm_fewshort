@@ -97,7 +97,7 @@ def infer_chip_rois_industrial(chips):
         "total": resolved + unresolved,
         "resolved": resolved,
         "unresolved": unresolved,
-        "resolution_ratio": resolved / max(1, (resolved + unresolved))
+ #       "resolution_ratio": resolved / max(1, (resolved + unresolved))
     }
 
     return outputs, stats

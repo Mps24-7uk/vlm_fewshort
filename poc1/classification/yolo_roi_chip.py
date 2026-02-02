@@ -73,7 +73,7 @@ def get_horizontal_chip_rois(image_path, yolo_txt):
         "total": passed + rejected,
         "passed": passed,
         "rejected": rejected,
-        "pass_ratio": passed / max(1, (passed + rejected))
+ #       "pass_ratio": passed / max(1, (passed + rejected))
     }
 
     return chips, stats

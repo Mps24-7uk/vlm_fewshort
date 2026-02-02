@@ -1,5 +1,6 @@
 from yolo_roi_chip import get_horizontal_chip_rois
 from embedding_res import infer_chip_rois_industrial
+from vlm_reasoning import run_vlm_reasoning
 
 IMAGE = "chips.jpg"
 YOLO_FILE = "123abc.txt"
@@ -22,3 +23,11 @@ for r in results:
         print("ACCEPTED:", r["match"], r["confidence"])
     else:
         print("REVIEW:", r["top_k"])
+
+
+# ---- VLM fallback ----
+vlm_results = run_vlm_reasoning(results)
+
+print("\nVLM FINAL OUTPUTS:")
+for v in vlm_results:
+    print(v)

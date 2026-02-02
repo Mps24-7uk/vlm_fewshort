@@ -19,3 +19,7 @@ FAISS_PATHS_PATH = "models/chip_paths.npy"
 LOG_EVERY = True
 SAVE_DEBUG = False
 DEBUG_DIR = "debug_rois"
+
+
+# --- VLM ---
+REFERENCE_DIR = "./chip_images/"

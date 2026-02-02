@@ -1,86 +1,80 @@
 import torch
 from transformers import Qwen3VLForConditionalGeneration, AutoProcessor
+import os
+from PIL import Image
+from config import REFERENCE_DIR
 
-# Load model
 model = Qwen3VLForConditionalGeneration.from_pretrained(
     "Qwen/Qwen3-VL-32B-Instruct",
     dtype="auto",
     device_map="auto"
 )
-
 processor = AutoProcessor.from_pretrained("Qwen/Qwen3-VL-32B-Instruct")
 
-# 1 Query + 3 Reference images
-query_image = "https://example.com/query.jpg"
-ref_images = [
-    "https://example.com/ref1.jpg",
-    "https://example.com/ref2.jpg",
-    "https://example.com/ref3.jpg",
-]
+def run_vlm_reasoning(results):
+    vlm_outputs = []
 
-# Multimodal prompt
-messages = [
-    {
-        "role": "user",
-        "content": [
-            {"type": "image", "image": query_image},
-            {"type": "image", "image": ref_images[0]},
-            {"type": "image", "image": ref_images[1]},
-            {"type": "image", "image": ref_images[2]},
+    for idx, result in enumerate(results):
+        if result["status"] != "review":
+            continue
+
+        query_image = Image.fromarray(result["roi"])
+
+        ref_images = []
+        for k in result["top_k"]:
+            ref_path = os.path.join(REFERENCE_DIR, k["match"])
+            ref_images.append(Image.open(ref_path).convert("RGB"))
+
+        messages = [
             {
-                "type": "text",
-                "text": """
-The first image is the QUERY.
-The next three images are REFERENCES.
+                "role": "user",
+                "content": [
+                    {"type": "image", "image": query_image},
+                    {"type": "image", "image": ref_images[0]},
+                    {"type": "image", "image": ref_images[1]},
+                    {"type": "image", "image": ref_images[2]},
+                    {
+                        "type": "text",
+                        "text": """
+The first image is the QUERY chip.
+The next three images are REFERENCE chips.
 
 Task:
-1. Compare the query image with each reference.
-2. Analyze objects, layout, scene type, and visual style.
-3. For each reference, give:
-   - Similarity score from 0 to 100
-   - Short reasoning.
-
-Return output in this format:
-
-Reference 1:
-Score: XX/100
-Reason: ...
-
-Reference 2:
-Score: XX/100
-Reason: ...
-
-Reference 3:
-Score: XX/100
-Reason: ...
+Compare query with each reference.
+Return similarity score (0–100) and reasoning.
 """
+                    }
+                ]
             }
         ]
-    }
-]
 
-# Prepare inputs
-inputs = processor.apply_chat_template(
-    messages,
-    tokenize=True,
-    add_generation_prompt=True,
-    return_dict=True,
-    return_tensors="pt"
-).to(model.device)
+        inputs = processor.apply_chat_template(
+            messages,
+            tokenize=True,
+            add_generation_prompt=True,
+            return_dict=True,
+            return_tensors="pt"
+        ).to(model.device)
 
-# Generate
-generated_ids = model.generate(**inputs, max_new_tokens=512)
+        generated_ids = model.generate(**inputs, max_new_tokens=512)
+        generated_ids_trimmed = [
+            out[len(inp):]
+            for inp, out in zip(inputs.input_ids, generated_ids)
+        ]
 
-# Trim prompt
-generated_ids_trimmed = [
-    out[len(inp):] 
-    for inp, out in zip(inputs.input_ids, generated_ids)
-]
+        output = processor.batch_decode(
+            generated_ids_trimmed,
+            skip_special_tokens=True
+        )[0]
 
-# Decode
-output = processor.batch_decode(
-    generated_ids_trimmed,
-    skip_special_tokens=True
-)
+        print(f"\n[VLM RESULT] ROI {idx}")
+        print(output)
 
-print(output[0])
+        vlm_outputs.append({
+            "roi": result["roi"],
+            "pts": result["pts"],
+            "top_k": result["top_k"],
+            "vlm_output": output
+        })
+
+    return vlm_outputs
