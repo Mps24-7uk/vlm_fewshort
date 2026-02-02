@@ -2,7 +2,7 @@ import torch
 from transformers import Qwen3VLForConditionalGeneration, AutoProcessor
 import os
 from PIL import Image
-from config import REFERENCE_DIR
+from config import REFERENCE_DIR, QWEN_CONF_TH
 
 model = Qwen3VLForConditionalGeneration.from_pretrained(
     "Qwen/Qwen3-VL-32B-Instruct",
@@ -12,7 +12,8 @@ model = Qwen3VLForConditionalGeneration.from_pretrained(
 processor = AutoProcessor.from_pretrained("Qwen/Qwen3-VL-32B-Instruct")
 
 def run_vlm_reasoning(results):
-    vlm_outputs = []
+    resolved = 0
+    unresolved = 0 
 
     for idx, result in enumerate(results):
         if result["status"] != "review":
@@ -36,12 +37,12 @@ def run_vlm_reasoning(results):
                     {
                         "type": "text",
                         "text": """
-The first image is the QUERY chip.
-The next three images are REFERENCE chips.
+The first image is the QUERY.
+The next three images are REFERENCE.
 
 Task:
 Compare query with each reference.
-Return similarity score (0–100) and reasoning.
+Return similarity score (0–100).
 """
                     }
                 ]
@@ -67,14 +68,19 @@ Return similarity score (0–100) and reasoning.
             skip_special_tokens=True
         )[0]
 
-        print(f"\n[VLM RESULT] ROI {idx}")
-        print(output)
 
-        vlm_outputs.append({
-            "roi": result["roi"],
-            "pts": result["pts"],
-            "top_k": result["top_k"],
-            "vlm_output": output
-        })
+        if int(output)*0.01>= QWEN_CONF_TH:
+            results[idx]["status"]="accepted"
+            results[idx]["confidence"]=int(output)*0.01
+            resolved += 1
+        else:   
+            unresolved += 1
+            
+        vlm_stats = {
+            "total": resolved + unresolved,
+            "resolved": resolved,
+            "unresolved": unresolved,
+#       "resolution_ratio": resolved / max(1, (resolved + unresolved))
+        }
 
-    return vlm_outputs
+    return results,vlm_stats

@@ -26,7 +26,7 @@ for r in results:
 
 
 # ---- VLM fallback ----
-vlm_results = run_vlm_reasoning(results)
+results, vlm_stats = run_vlm_reasoning(results)
 
 print("\nVLM FINAL OUTPUTS:")
 for v in vlm_results:
